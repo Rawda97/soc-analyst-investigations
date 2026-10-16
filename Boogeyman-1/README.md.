@@ -1,0 +1,427 @@
+# Boogeyman 1 — Phishing, Endpoint and Network Forensics Investigation
+
+## 1. Investigation Overview
+
+This report documents an investigation of the TryHackMe Boogeyman 1 scenario, involving a targeted phishing attack against the finance department of Quick Logistics LLC.
+
+The investigation follows the attack from a malicious email attachment through PowerShell execution, system enumeration, command-and-control (C2) communication, and the exfiltration of sensitive information.
+
+### Objectives
+
+- Investigate the phishing email and its attachment.
+- Identify the malicious execution mechanism.
+- Analyze PowerShell activity on the compromised workstation.
+- Identify attacker-controlled infrastructure.
+- Investigate HTTP-based command-and-control traffic.
+- Detect and reconstruct DNS-based data exfiltration.
+- Assess the security impact of the compromise.
+
+### Evidence Sources
+
+| Artifact | Purpose |
+|---|---|
+| `dump.eml` | Phishing email and attachment analysis |
+| `powershell.json` | PowerShell execution and attacker activity |
+| `capture.pcapng` | HTTP, DNS and network traffic analysis |
+
+### Tools
+
+Thunderbird, LNKParse3, jq, Wireshark, TShark, CyberChef, Linux command-line utilities and KeePass-compatible database software.
+
+**Investigation Category:** Phishing Analysis / Endpoint Investigation / Network Forensics / Data Exfiltration
+
+---
+
+## 2. Investigation Findings
+
+### Finding 1 — Phishing Email Analysis
+
+**Objective:** Identify the sender, recipient, and email delivery infrastructure.
+
+The attack originated from an email impersonating a business-related invoice follow-up.
+
+**Identified artifacts:**
+
+| Field | Value |
+|---|---|
+| Sender | `agriffin@bpakcaging.xyz` |
+| Recipient | `julianne.westcott@hotmail.com` |
+| Third-party mail relay | Elastic Email |
+| Suspected attack vector | Malicious email attachment |
+
+**Investigation method:**
+
+The `dump.eml` file was examined to identify the sender and recipient addresses, email headers, and attached content.
+
+The `DKIM-Signature` and `List-Unsubscribe` headers provided indicators of the third-party email delivery service.
+
+**Analysis:**
+
+The email used an invoice-related pretext to encourage the recipient to open the attachment.
+
+The domain `bpakcaging.xyz` is notable because it resembles the name of the business partner mentioned in the scenario, potentially increasing the credibility of the phishing message.
+
+The use of a legitimate mail relay does not establish that the email itself is trustworthy.
+
+**Security significance:** Business-themed phishing can exploit existing relationships and routine financial workflows to encourage malicious attachment execution.
+
+### Finding 2 — Malicious Attachment and Encoded Execution
+
+**Objective:** Identify the file inside the encrypted attachment and determine its execution mechanism.
+
+**Identified file:**
+
+```text
+Invoice_20230103.lnk
+```
+
+The archive was password-protected. Its contents included a Windows shortcut (`.lnk`) rather than an ordinary invoice document.
+
+**Analysis method:**
+
+After extracting the attachment in the authorized lab environment, the shortcut's metadata and command-line arguments could be examined with LNKParse3:
+
+```bash
+lnkparse Invoice_20230103.lnk
+```
+
+The shortcut contained a Base64-encoded PowerShell payload in its command-line arguments.
+
+**Decoded payload behavior:**
+
+The PowerShell command used a `System.Net.WebClient` object to retrieve content from an attacker-controlled file-hosting endpoint.
+
+The recovered command included a request to:
+
+```text
+http://files.bpakcaging.xyz/update
+```
+
+**Analysis:**
+
+The `.lnk` extension identifies a Windows shortcut capable of launching another program with specified arguments.
+
+Using an encoded PowerShell command makes the malicious action less obvious during casual inspection.
+
+The download operation indicates that the shortcut served as an initial execution mechanism for retrieving an additional payload.
+
+**Security significance:** Suspicious shortcuts containing encoded PowerShell commands are valuable indicators of malicious attachment execution.
+
+### Finding 3 — PowerShell Execution and System Enumeration
+
+**Objective:** Identify attacker activity recorded on the compromised workstation.
+
+**Evidence source:** `powershell.json`
+
+The investigation used JSON-formatted PowerShell logs to examine executed script blocks.
+
+**Analysis command:**
+
+```bash
+jq -r '.ScriptBlockText // empty' powershell.json
+```
+
+**Additional filtering:**
+
+```bash
+jq -r '.ScriptBlockText // empty' powershell.json | grep -Ei 'seatbelt|sq3.exe|nslookup|kdbx|sqlite'
+```
+
+**Identified activity:**
+
+- PowerShell-based payload execution.
+- Download or use of the Seatbelt enumeration tool.
+- Use of `sq3.exe` to access SQLite data.
+- Access to `plum.sqlite`, associated with Microsoft Sticky Notes.
+- Identification of a KeePass database named `protected_data.kdbx`.
+- Use of `nslookup` during the exfiltration activity.
+
+**Analysis:**
+
+Seatbelt is a Windows security enumeration utility that can collect information about a host's configuration and security posture.
+
+The use of `sq3.exe` to access SQLite data indicates that the attacker investigated locally stored application information.
+
+Microsoft Sticky Notes data was relevant because it could contain sensitive information recorded by the user.
+
+The discovery of a KeePass database provided another target for credential or sensitive-data theft.
+
+**Security significance:** Enumeration followed by access to user application databases can indicate preparation for data theft.
+
+### Finding 4 — Attacker Infrastructure and HTTP Communication
+
+**Objective:** Identify file-hosting and C2 infrastructure, and determine how command output was transmitted.
+
+**Identified domains:**
+
+| Domain | Observed role |
+|---|---|
+| `files.bpakcaging.xyz` | File and payload hosting |
+| `cdn.bpakcaging.xyz` | Command-and-control communication |
+
+**Evidence source:** `capture.pcapng`
+
+**Wireshark display filters:**
+
+```text
+http.host == "files.bpakcaging.xyz"
+```
+
+```text
+http.host == "cdn.bpakcaging.xyz"
+```
+
+**Analysis method:**
+
+HTTP requests and responses were inspected using Wireshark, including the Follow TCP Stream feature.
+
+The file-hosting service was identified as Python-based from the HTTP response information.
+
+The C2-related traffic used HTTP `POST` requests to transmit command output.
+
+**Analysis:**
+
+HTTP traffic can carry both attacker instructions and the results of commands executed on a compromised system.
+
+The distinction between file hosting and C2 infrastructure helped separate payload delivery from subsequent attacker communication.
+
+**Security significance:** Correlating suspicious HTTP traffic with endpoint execution logs helps reconstruct the command-and-control stage of an intrusion.
+
+### Finding 5 — Sensitive Data Discovery
+
+**Objective:** Understand how the attacker obtained information used to access an encrypted database.
+
+PowerShell activity indicated that `sq3.exe` was used to query a SQLite database associated with Microsoft Sticky Notes.
+
+**Observed SQL query:**
+
+```sql
+SELECT * FROM NOTE
+```
+
+The command output was investigated through the network capture.
+
+**Analysis method:**
+
+The relevant HTTP streams were inspected to locate the SQL command and its returned data.
+
+The extracted information required decoding before it could be interpreted.
+
+The recovered data provided a password associated with the encrypted KeePass database.
+
+**Analysis:**
+
+The attacker used one source of user data to obtain information that could unlock another, more sensitive file.
+
+This demonstrates how seemingly ordinary application data can contribute to a larger compromise when users store secrets in accessible locations.
+
+**Security significance:** Sensitive information stored in notes or application databases can create additional credential exposure.
+
+*The recovered database password is intentionally omitted from this public report.*
+
+### Finding 6 — DNS-Based Data Exfiltration
+
+**Objective:** Determine how the attacker transferred sensitive information outside the compromised environment.
+
+**Identified artifacts:**
+
+| Indicator | Value |
+|---|---|
+| Exfiltration protocol | DNS |
+| Tool | `nslookup` |
+| Encoding | Hexadecimal |
+| Targeted file | `protected_data.kdbx` |
+| Associated domain | `bpakcaging.xyz` |
+
+**Analysis:**
+
+The attacker encoded file content as hexadecimal text and placed portions of that data into DNS queries.
+
+The `nslookup` utility was used to generate DNS requests containing the encoded information.
+
+This technique allowed file content to be transmitted through DNS traffic rather than a conventional file upload.
+
+**Initial TShark inspection:**
+
+```bash
+tshark -r capture.pcapng \
+  -Y 'dns.qry.name contains "bpakcaging.xyz"' \
+  -T fields -e dns.qry.name
+```
+
+**Focused inspection of the relevant traffic:**
+
+```bash
+tshark -r capture.pcapng \
+  -Y 'dns.qry.name contains "bpakcaging.xyz" && ip.dst == 167.71.211.113' \
+  -T fields -e dns.qry.name
+```
+
+**Reconstruction methodology:**
+
+1. Identify DNS requests containing the suspicious domain.
+2. Isolate the labels carrying encoded data.
+3. Preserve the original sequence of data-bearing requests.
+4. Remove domain suffixes and unrelated DNS queries.
+5. Reassemble the hexadecimal content.
+6. Convert the hexadecimal data back into binary.
+7. Validate the recovered file format before opening it.
+
+**Analysis:**
+
+DNS exfiltration can be difficult to detect when monitoring focuses mainly on HTTP and HTTPS traffic.
+
+Long or unusually structured DNS queries, particularly repeated requests to an uncommon domain, can provide useful detection opportunities.
+
+The investigation demonstrated how network telemetry can help reconstruct exfiltrated data.
+
+### Finding 7 — Recovered KeePass Database
+
+**Objective:** Determine the impact of the DNS exfiltration activity.
+
+The reconstructed data corresponded to a KeePass database:
+
+```text
+protected_data.kdbx
+```
+
+A `.kdbx` file is an encrypted database format used by KeePass-compatible password managers.
+
+The recovered database was examined using the password identified during the earlier SQLite and HTTP investigation.
+
+The lab investigation confirmed that the database contained sensitive financial information, including a payment card number.
+
+**Analysis:**
+
+The attacker combined information recovered from the compromised workstation with network-based data exfiltration to access protected information.
+
+This demonstrates how multiple attack stages can work together to expose sensitive data.
+
+**Security significance:** An encrypted database remains vulnerable to disclosure when an attacker obtains both the database and the credentials needed to unlock it.
+
+*The database password and payment card number are excluded from this public report.*
+
+---
+
+## 3. Reconstructed Attack Sequence
+
+This is a logical reconstruction based on the investigation artifacts. It is not a timestamp-verified event timeline.
+
+| Stage | Attacker activity | Supporting evidence |
+|---|---|---|
+| 1 | Delivered phishing email | `dump.eml` |
+| 2 | Used an encrypted attachment containing a shortcut | `Invoice_20230103.lnk` |
+| 3 | Triggered encoded PowerShell execution | LNK command-line arguments |
+| 4 | Retrieved additional content | File-hosting domain |
+| 5 | Enumerated the compromised system | Seatbelt activity |
+| 6 | Accessed locally stored application data | `sq3.exe`, `plum.sqlite` |
+| 7 | Communicated with C2 infrastructure | HTTP POST traffic |
+| 8 | Exfiltrated a KeePass database | DNS queries containing hexadecimal data |
+| 9 | Exposed sensitive information | Recovered database contents |
+
+---
+
+## 4. Indicators of Compromise
+
+| Type | Indicator |
+|---|---|
+| Suspicious sender | `agriffin@bpakcaging.xyz` |
+| Malicious shortcut | `Invoice_20230103.lnk` |
+| File-hosting domain | `files.bpakcaging.xyz` |
+| C2 domain | `cdn.bpakcaging.xyz` |
+| Associated exfiltration destination IP | `167.71.211.113` |
+| Enumeration utility | Seatbelt |
+| SQLite access utility | `sq3.exe` |
+| Accessed database | `plum.sqlite` |
+| Exfiltrated file | `protected_data.kdbx` |
+| Exfiltration utility | `nslookup` |
+| Exfiltration protocol | DNS |
+| Exfiltration encoding | Hexadecimal |
+
+*These indicators are specific to the TryHackMe training scenario. Their presence outside this context requires independent validation.*
+
+---
+
+## 5. Detection and Response Recommendations
+
+**Email security**
+
+- Investigate unexpected encrypted attachments and Windows shortcut files received by email.
+- Examine sender domains, email headers, and attachment behavior.
+- Apply attachment controls appropriate to organizational policy.
+
+**Endpoint monitoring**
+
+- Monitor suspicious PowerShell execution and encoded commands.
+- Correlate script execution with external network requests.
+- Investigate unexpected access to user application databases and password stores.
+
+**Network detection**
+
+- Monitor suspicious HTTP POST traffic to untrusted infrastructure.
+- Identify unusual DNS query lengths, frequencies, and domain patterns.
+- Investigate repeated DNS requests containing high-entropy or encoded-looking labels.
+
+**Incident response**
+
+- Preserve email, endpoint, and network evidence.
+- Contain confirmed compromised systems.
+- Investigate potentially exposed credentials and financial information.
+- Rotate compromised credentials and follow applicable data breach procedures.
+
+---
+
+## 6. MITRE ATT&CK Mapping
+
+The following techniques are relevant to the observed behavior:
+
+| Technique | ID | Investigation evidence |
+|---|---|---|
+| Spearphishing Attachment | T1566.001 | Malicious email attachment |
+| PowerShell | T1059.001 | Encoded PowerShell execution |
+| System Information Discovery | T1082 | Host enumeration activity |
+| Application Layer Protocol: Web Protocols | T1071.001 | HTTP-based C2 communication |
+| Exfiltration Over Alternative Protocol: DNS | T1048.003 | DNS-based data exfiltration |
+
+*Technique mappings describe the observed behavior and should not be interpreted as attribution to a specific threat actor.*
+
+---
+
+## 7. Conclusion
+
+The Boogeyman 1 investigation demonstrated how a phishing attachment can lead to a multi-stage compromise involving endpoint execution, system enumeration, command-and-control communication, and sensitive-data exfiltration.
+
+By correlating email evidence, PowerShell execution logs, and packet capture data, the investigation reconstructed the attacker's behavior across multiple stages.
+
+The most significant finding was the use of DNS queries to transfer hexadecimal-encoded data representing an encrypted KeePass database.
+
+### Skills Demonstrated
+
+- Phishing email and header analysis
+- Malicious Windows shortcut analysis
+- PowerShell log investigation
+- JSON parsing with jq
+- HTTP traffic analysis with Wireshark
+- Network investigation with TShark
+- DNS exfiltration detection
+- Hexadecimal data reconstruction
+- Sensitive-data exposure assessment
+- IOC extraction and incident reporting
+
+---
+
+## 8. Lab Reference and Research Sources
+
+- [TryHackMe — Boogeyman 1](https://tryhackme.com/room/boogeyman1)
+- [Boogeyman 1 Investigation Reference — FaresMorcy](https://faresbltagy.gitbook.io/footprintinglabs/tryhackme-soc-1/boogeyman-1)
+- [Boogeyman 1 Walkthrough — Lindsay Edwards](https://lindsayedwardsit.com/archive/boogeyman-1-walkthrough/)
+
+This report documents a training investigation. Public walkthroughs were used to cross-check lab-specific artifacts and technical details. It does not claim independent verification of original log output where that output was not retained.
+
+**Platform:** TryHackMe
+
+**Lab:** Boogeyman 1
+
+**Focus:** SOC Level 1 / Phishing Investigation / Network Forensics / Data Exfiltration
+
+*All investigation activity relates to an authorized cybersecurity training environment.*
