@@ -61,7 +61,8 @@ Developed a network-based intrusion detection and security assessment project fo
 - Network segmentation and defensive controls
 - Security monitoring and incident analysis
 
-**Project repository:** [IP Camera IoT Intrusion Detection](https://github.com/RawdaAlsanussi/ip-camera-iot-intrusion-detection)
+**Project repository:** [IP Camera IoT Intrusion Detection] https://github.com/Rawda97/soc-analyst-investigations
+
 
 ## Tools & Technologies
 
